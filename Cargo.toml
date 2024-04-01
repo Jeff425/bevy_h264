@@ -1,0 +1,19 @@
+[package]
+name = "bevy_h264"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+openh264 = "0.4"
+thiserror = "1.0"
+bevy_asset = "0.13"
+bevy_reflect = "0.13"
+bevy_render = "0.13"
+bevy_ecs = "0.13"
+bevy_time = "0.13"
+bevy_app = "0.13"
+
+[workspace]
+members = [
+    "example",
+]
