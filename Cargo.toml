@@ -2,6 +2,12 @@
 name = "bevy_h264"
 version = "0.1.0"
 edition = "2021"
+description = "A primitive h264 player for Bevy"
+readme = "README.md"
+repository = "https://github.com/Jeff425/bevy_h264"
+license = "MIT"
+keywords = ["Bevy", "Video", "h264"]
+
 
 [dependencies]
 openh264 = "0.4"
