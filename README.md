@@ -57,6 +57,7 @@ This is not hardware accelerated at all. If you want an FPS of 60+ then make sur
 
 ## Patent and license on h264
 Nothing below is legal advice, just my findings on the subject matter
+
 The h264 codec has many patents related to it, listed here https://www.reddit.com/r/linux/comments/10v3op0/which_year_should_we_treat_h264_patents_as/
 
 MPEG LA also requires a license if you are selling your application bundled with the videos
