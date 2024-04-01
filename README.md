@@ -54,3 +54,15 @@ Pause the video by inserting the H264DecoderPause component onto your decoder en
 If decoder.repeat == false, then at the end of the video H264DecoderPause will be inserted.
 
 This is not hardware accelerated at all. If you want an FPS of 60+ then make sure to compile in release mode
+
+## Patent and license on h264
+Nothing below is legal advice, just my findings on the subject matter
+The h264 codec has many patents related to it, listed here https://www.reddit.com/r/linux/comments/10v3op0/which_year_should_we_treat_h264_patents_as/
+
+MPEG LA also requires a license if you are selling your application bundled with the videos
+https://www.via-la.com/licensing-2/avc-h-264/avc-h-264-license-fees/
+The codec itself is shipped with Windows and Mac, thus the only fees that an application should have to worry about is Section 2 Title-by-Title.
+If you ship 12 minutes or less, then there is no royalty fee. Otherwise, the fee is $0.02 per title.
+I am making an assumption that selling 1 copy of your application counts as 1 "title"
+
+If you do decide to ship a commercial application with h264 videos, I highly recommend doing research and contacting a lawyer
