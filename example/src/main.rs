@@ -1,12 +1,12 @@
-use bevy::{app::{App, Startup, Update}, asset::{AssetServer, Assets, Handle}, core_pipeline::core_3d::Camera3dBundle, ecs::{event::EventReader, query::With, schedule::IntoSystemConfigs, system::{Commands, Query, Res, ResMut}}, math::Vec3, pbr::{AmbientLight, PbrBundle, StandardMaterial}, render::{mesh::{shape::Plane, Mesh}, texture::Image}, transform::components::Transform, utils::default, DefaultPlugins};
+use bevy::{app::{App, FixedUpdate, Startup}, asset::{AssetServer, Assets, Handle}, core_pipeline::core_3d::Camera3dBundle, ecs::{event::EventReader, query::With, schedule::IntoSystemConfigs, system::{Commands, Query, Res, ResMut}}, math::Vec3, pbr::{AmbientLight, PbrBundle, StandardMaterial}, render::{mesh::{shape::Plane, Mesh}, texture::Image}, transform::components::Transform, utils::default, DefaultPlugins};
 use bevy_h264::{decode_video, H264Decoder, H264DecoderLoading, H264Plugin, H264UpdateEvent};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(H264Plugin)
+        .add_plugins(H264Plugin { fps: Some(120.0) })
         .add_systems(Startup, setup)
-        .add_systems(Update, modify_materials.after(decode_video))
+        .add_systems(FixedUpdate, modify_materials.after(decode_video))
         .run();
 }
 
@@ -21,7 +21,6 @@ fn setup(
         &mut images,
         asset_server.load("test.h264"),
         false,
-        1.0 / 60.0,
     );
 
     commands.spawn(PbrBundle {

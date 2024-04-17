@@ -1,15 +1,15 @@
 use std::{collections::VecDeque, sync::{mpsc::{channel, Sender}, Arc, Mutex}};
 
-use bevy_app::{Plugin, PreUpdate, Update};
+use bevy_app::{FixedUpdate, Plugin, PreUpdate, Update};
 use bevy_asset::{Asset, AssetApp, AssetLoader, AssetServer, Assets, AsyncReadExt, Handle, LoadState};
-use bevy_ecs::{component::Component, entity::Entity, event::{Event, EventWriter}, query::{With, Without}, schedule::IntoSystemConfigs, system::{Commands, Query, Res, ResMut}};
+use bevy_ecs::{component::Component, entity::Entity, event::{Event, EventReader, EventWriter}, query::{Has, With, Without}, schedule::IntoSystemConfigs, system::{Commands, Query, Res, ResMut}};
 use bevy_reflect::TypePath;
 use bevy_render::{render_asset::RenderAssetUsages, render_resource::{Extent3d, TextureDimension, TextureFormat}, texture::Image};
-use bevy_time::{Real, Time};
-use openh264::{decoder::{Decoder, DecoderConfig}, nal_units};
+use bevy_time::{Fixed, Time};
+use openh264::{decoder::{DecodedYUV, Decoder, DecoderConfig}, nal_units};
 use thiserror::Error;
 
-const BUF_SIZE: usize = 3;
+const BUF_SIZE: usize = 10;
 
 #[derive(Asset, TypePath)]
 pub struct H264Video {
@@ -69,20 +69,18 @@ pub struct H264Decoder {
     video: Handle<H264Video>,
     render_target: Handle<Image>,
     repeat: bool,
-    frame_time: f32, // 1.0 / 60.0 for 60 FPS
     
     next_frame: usize,
     frame_count: usize,
 
     frame_idx: usize,
-    current_frame_time: f32,
 
     sender: Mutex<Sender<DecoderMessage>>,
     next_frame_rgb8: Arc<Mutex<VecDeque<VideoFrame>>>,
 }
 
 impl H264Decoder {
-    pub fn new(images: &mut ResMut<Assets<Image>>, video: Handle<H264Video>, repeat: bool, frame_time: f32) -> Self {
+    pub fn new(images: &mut ResMut<Assets<Image>>, video: Handle<H264Video>, repeat: bool) -> Self {
         let render_target = images.add(Image::new_fill(
             Extent3d {
                 width: 12,
@@ -114,8 +112,7 @@ impl H264Decoder {
                     let Some(decoded_yuv) = decoded_yuv else {continue};
 
                     let (width, height) = decoded_yuv.dimension_rgb();
-                    let mut buffer = vec![0; width * height * 3];
-                    decoded_yuv.write_rgb8(buffer.as_mut_slice());
+                    let buffer = decoded_yuv.write_bgra8();
                     let frame = VideoFrame {
                         buffer,
                         width,
@@ -131,11 +128,9 @@ impl H264Decoder {
             video,
             render_target: render_target.clone(),
             repeat,
-            frame_time, 
             next_frame: 0,
             frame_count: 0,
             frame_idx: 0,
-            current_frame_time: frame_time + 1.0,
             sender: Mutex::new(sender),
             next_frame_rgb8,
         }
@@ -212,68 +207,130 @@ pub fn decode_video(
     mut query: Query<(Entity, &mut H264Decoder), (Without<H264DecoderPause>, Without<H264DecoderLoading>)>,
     mut images: ResMut<Assets<Image>>,
     mut update_ev: EventWriter<H264UpdateEvent>,
-    time: Res<Time<Real>>,
 ) {
     for (entity, mut decoder) in query.iter_mut() {
-        decoder.current_frame_time += time.delta_seconds();
-        if decoder.current_frame_time > decoder.frame_time {
-            if let Some(frame) = decoder.take_frame() {
-                let image = match images.get_mut(&decoder.render_target) {
-                    Some(image) => image,
-                    None => {
-                        // Render target is missing, remove self
-                        println!("Render target is missing");
-                        commands.entity(entity).remove::<H264Decoder>();
-                        continue;
-                    }
-                };
-                if image.texture_descriptor.size.width != frame.width as u32 || image.texture_descriptor.size.height != frame.height as u32 {
-                    image.resize(Extent3d { width: frame.width as u32, height: frame.height as u32, depth_or_array_layers: 1 });
+        if let Some(frame) = decoder.take_frame() {
+            let image = match images.get_mut(&decoder.render_target) {
+                Some(image) => image,
+                None => {
+                    // Render target is missing, remove self
+                    println!("Render target is missing");
+                    commands.entity(entity).remove::<H264Decoder>();
+                    continue;
                 }
-                for (dest, src) in image.data.chunks_exact_mut(4).zip(frame.buffer.chunks_exact(3)) {
-                    dest.copy_from_slice(&[src[2], src[1], src[0], 255]);
-                }
-
-                // Send the event
-                update_ev.send(H264UpdateEvent(entity));
-                decoder.current_frame_time = 0.0;
-                decoder.next_frame = decoder.next_frame + 1;
-                if decoder.next_frame >= decoder.frame_count {
-                    decoder.next_frame = 0;
-                    if !decoder.repeat {
-                        commands.entity(entity).insert(H264DecoderPause {});
-                    }
-                }                
+            };
+            if image.texture_descriptor.size.width != frame.width as u32 || image.texture_descriptor.size.height != frame.height as u32 {
+                image.resize(Extent3d { width: frame.width as u32, height: frame.height as u32, depth_or_array_layers: 1 });
             }
-            // If frame is missed, wait until next game tick
+
+            image.data = frame.buffer;
+
+            // Send the event
+            update_ev.send(H264UpdateEvent(entity));
+            decoder.next_frame = decoder.next_frame + 1;
+            if decoder.next_frame >= decoder.frame_count {
+                decoder.next_frame = 0;
+                if !decoder.repeat {
+                    commands.entity(entity).insert(H264DecoderPause {});
+                }
+            }                
         }
+        // If frame is missed, wait until next game tick
     }
 }
 
 fn push_packet(
-    mut query: Query<&mut H264Decoder, Without<H264DecoderLoading>>,
+    mut query: Query<&mut H264Decoder, (Without<H264DecoderLoading>, Without<H264DecoderPause>)>,
     videos: Res<Assets<H264Video>>,
 ) {
     for mut decoder in query.iter_mut() {
         // Only push more packets if there is space in the buffer
-        if decoder.next_frame_rgb8.lock().unwrap().len() < BUF_SIZE {
-            if let Some(video) = videos.get(&decoder.video) {
+        let mut buffer_size = decoder.next_frame_rgb8.lock().unwrap().len();
+        if let Some(video) = videos.get(&decoder.video) {
+            while buffer_size < BUF_SIZE {
                 decoder.add_video_packet(video.buffer[decoder.frame_idx].clone());
                 decoder.frame_idx = (decoder.frame_idx + 1) % video.buffer.len();
+                buffer_size += 1;
             }
         }
     }
 }
 
-pub struct H264Plugin;
+// This event makes no garuntees on what the real frame will be
+// If the video is not suppose to restart, then you should make sure it has been paused (ideally for a short amount of time)
+// If the video is paused it will clear out the image queue
+#[derive(Event)]
+pub struct H264RestartEvent(Entity);
+
+fn restart_video(
+    mut query: Query<(&mut H264Decoder, Has<H264DecoderPause>), Without<H264DecoderLoading>>,
+    mut restart_ev: EventReader<H264RestartEvent>,
+) {
+    for event in restart_ev.read() {
+        if let Ok((mut decoder, is_paused)) = query.get_mut(event.0) {
+            decoder.frame_idx = 0;
+            decoder.next_frame = 0;
+            if is_paused {
+                decoder.next_frame_rgb8.lock().unwrap().clear();
+            }
+        }
+    }
+}
+
+// Skips a step of copying by just creating the buffer in the right format
+trait Bgra8Writer {
+    fn write_bgra8(&self) -> Vec<u8>;
+}
+impl<'a> Bgra8Writer for DecodedYUV<'a> {
+    fn write_bgra8(&self) -> Vec<u8> {
+        let dim = self.dimension_rgb();
+        let strides = self.strides_yuv();
+        let size = dim.0 * dim.1 * 4;
+
+        let mut result = vec![0; size];
+
+        for y in 0..dim.1 {
+            for x in 0..dim.0 {
+                let base_tgt = (y * dim.0 + x) * 4;
+                let base_y = y * strides.0 + x;
+                let base_u = (y / 2 * strides.1) + (x / 2);
+                let base_v = (y / 2 * strides.2) + (x / 2);
+
+                let bgra_pixel = &mut result[base_tgt..base_tgt + 4];
+
+                let y = self.y_with_stride()[base_y] as f32;
+                let u = self.u_with_stride()[base_u] as f32;
+                let v = self.v_with_stride()[base_v] as f32;
+
+                bgra_pixel[2] = (y + 1.402 * (v - 128.0)) as u8;
+                bgra_pixel[1] = (y - 0.344 * (u - 128.0) - 0.714 * (v - 128.0)) as u8;
+                bgra_pixel[0] = (y + 1.772 * (u - 128.0)) as u8;
+                bgra_pixel[3] = 255;
+            }
+        }
+        result
+    }
+}
+
+// Sets the fixed timestep to the given FPS
+// If fixed timestep is already set, then set this to None
+// All videos will play at the same FPS
+pub struct H264Plugin {
+    pub fps: Option<f64>,
+}
 
 impl Plugin for H264Plugin {
     fn build(&self, app: &mut bevy_app::App) {
+        if let Some(fps) = self.fps {
+            app.insert_resource(Time::<Fixed>::from_hz(fps));
+        }
         app
             .add_event::<H264UpdateEvent>()
+            .add_event::<H264RestartEvent>()
             .init_asset::<H264Video>()
             .init_asset_loader::<H264VideoLoader>()
             .add_systems(PreUpdate, begin_decode)
-            .add_systems(Update, (push_packet, decode_video).chain());
+            .add_systems(FixedUpdate, decode_video)
+            .add_systems(Update, (push_packet, restart_video).chain());
     }
 }
